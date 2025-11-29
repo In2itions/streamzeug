@@ -1,4 +1,4 @@
-module github.com/odmedia/streamzeug
+module github.com/In2itions/streamzeug
 
 go 1.14
 

@@ -11,9 +11,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/odmedia/streamzeug/input"
-	"github.com/odmedia/streamzeug/logging"
-	"github.com/odmedia/streamzeug/stats"
+	"github.com/In2itions/streamzeug/input"
+	"github.com/In2itions/streamzeug/logging"
+	"github.com/In2itions/streamzeug/stats"
 
 	"code.videolan.org/rist/ristgo"
 	"code.videolan.org/rist/ristgo/libristwrapper"

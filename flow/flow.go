@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"code.videolan.org/rist/ristgo"
-	"github.com/odmedia/streamzeug/config"
-	"github.com/odmedia/streamzeug/input"
-	"github.com/odmedia/streamzeug/logging"
-	"github.com/odmedia/streamzeug/mainloop"
-	"github.com/odmedia/streamzeug/stats"
+	"github.com/In2itions/streamzeug/config"
+	"github.com/In2itions/streamzeug/input"
+	"github.com/In2itions/streamzeug/logging"
+	"github.com/In2itions/streamzeug/mainloop"
+	"github.com/In2itions/streamzeug/stats"
 )
 
 type Flow struct {

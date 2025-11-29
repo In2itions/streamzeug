@@ -10,8 +10,8 @@ import (
 	"context"
 
 	"code.videolan.org/rist/ristgo/libristwrapper"
-	"github.com/odmedia/streamzeug/logging"
-	"github.com/odmedia/streamzeug/output"
+	"github.com/In2itions/streamzeug/logging"
+	"github.com/In2itions/streamzeug/output"
 )
 
 type out struct {

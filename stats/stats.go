@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"code.videolan.org/rist/ristgo/libristwrapper"
+	"github.com/In2itions/streamzeug/logging"
+	"github.com/In2itions/streamzeug/output/dektecasi/dtstats"
 	"github.com/haivision/srtgo"
 	rotatelogs "github.com/lestrrat-go/file-rotatelogs"
-	"github.com/odmedia/streamzeug/logging"
-	"github.com/odmedia/streamzeug/output/dektecasi/dtstats"
 )
 
 var (

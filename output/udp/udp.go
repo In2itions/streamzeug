@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"code.videolan.org/rist/ristgo/libristwrapper"
-	"github.com/odmedia/streamzeug/logging"
-	"github.com/odmedia/streamzeug/mainloop"
-	"github.com/odmedia/streamzeug/output"
-	"github.com/odmedia/streamzeug/vectorio"
+	"github.com/In2itions/streamzeug/logging"
+	"github.com/In2itions/streamzeug/mainloop"
+	"github.com/In2itions/streamzeug/output"
+	"github.com/In2itions/streamzeug/vectorio"
 	"golang.org/x/sys/unix"
 )
 

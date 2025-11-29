@@ -9,8 +9,8 @@ package flow
 import (
 	"net/url"
 
-	"github.com/odmedia/streamzeug/config"
-	"github.com/odmedia/streamzeug/input/rist"
+	"github.com/In2itions/streamzeug/config"
+	"github.com/In2itions/streamzeug/input/rist"
 )
 
 func (f *Flow) setupInput(c *config.Input) error {

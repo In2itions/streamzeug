@@ -13,9 +13,9 @@ import (
 
 	"code.videolan.org/rist/ristgo"
 	"code.videolan.org/rist/ristgo/libristwrapper"
-	"github.com/odmedia/streamzeug/mainloop"
-	"github.com/odmedia/streamzeug/output"
-	"github.com/odmedia/streamzeug/stats"
+	"github.com/In2itions/streamzeug/mainloop"
+	"github.com/In2itions/streamzeug/output"
+	"github.com/In2itions/streamzeug/stats"
 )
 
 type ristoutput struct {

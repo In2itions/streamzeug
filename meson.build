@@ -141,8 +141,8 @@ r = run_command(
 )
 vcs = r.stdout().strip()
 
-streamzeug_ver = '-X \'github.com/odmedia/streamzeug/version.ProjectVersion=v@0@\''.format(meson.project_version())
-streamzeug_gitver = '-X  \'github.com/odmedia/streamzeug/version.GitVersion=v@0@\''.format(vcs)
+streamzeug_ver = '-X \'github.com/In2itions/streamzeug/version.ProjectVersion=v@0@\''.format(meson.project_version())
+streamzeug_gitver = '-X  \'github.com/In2itions/streamzeug/version.GitVersion=v@0@\''.format(vcs)
 streamzeug_ldflags = '-ldflags= @0@ @1@'.format(streamzeug_ver, streamzeug_gitver)
 
 streamzeug = custom_target(

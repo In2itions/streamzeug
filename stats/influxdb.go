@@ -15,14 +15,14 @@ import (
 	"time"
 
 	"code.videolan.org/rist/ristgo/libristwrapper"
+	"github.com/In2itions/streamzeug/config"
+	"github.com/In2itions/streamzeug/logging"
+	"github.com/In2itions/streamzeug/output/dektecasi/dtstats"
+	"github.com/In2itions/streamzeug/version"
 	"github.com/Showmax/go-fqdn"
 	"github.com/haivision/srtgo"
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 	"github.com/influxdata/influxdb-client-go/v2/api"
-	"github.com/odmedia/streamzeug/config"
-	"github.com/odmedia/streamzeug/logging"
-	"github.com/odmedia/streamzeug/output/dektecasi/dtstats"
-	"github.com/odmedia/streamzeug/version"
 	"github.com/sam-kamerer/go-runtime-metrics/v2/pkg/collector"
 )
 

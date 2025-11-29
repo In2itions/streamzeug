@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"code.videolan.org/rist/ristgo"
-	"github.com/odmedia/streamzeug/logging"
-	"github.com/odmedia/streamzeug/output"
+	"github.com/In2itions/streamzeug/logging"
+	"github.com/In2itions/streamzeug/output"
 	"github.com/rs/zerolog"
 )
 
