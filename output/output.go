@@ -6,11 +6,11 @@
 
 package output
 
-import "code.videolan.org/rist/ristgo/libristwrapper"
+import "code.videolan.org/rist/ristgo"
 
 type Output interface {
 	Close() error
-	Write(block *libristwrapper.RistDataBlock) (n int, err error)
+	Write(block *ristgo.RistDataBlock) (n int, err error)
 	String() string
 	Count() int
 }
