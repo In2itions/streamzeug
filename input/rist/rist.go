@@ -42,7 +42,7 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 	logger.Info().Msg("Created internal RIST receiver (loopback mode)")
 
 	// --- Create sender ---
-	sender, err := ristgo.CreateSender(ctx, &ristgo.SenderConfig{
+	sender, err := ristgo.SenderCreate(ctx, &ristgo.SenderConfig{
 		RistProfile:             libristwrapper.RistProfileMain,
 		LoggingCallbackFunction: createLogCB(identifier + "-tx"),
 		StatsCallbackFunction:   createStatsCB(s),
