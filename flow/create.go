@@ -47,7 +47,7 @@ func CreateFlow(ctx context.Context, c *config.Flow) (*Flow, error) {
 	}
 
 	// Determine flow type (default RIST for backward compatibility)
-	flowType := strings.ToUpper(c.Type)
+	flowType := strings.ToUpper(c.InputType)
 	if flowType == "" {
 		flowType = "RIST"
 	}
