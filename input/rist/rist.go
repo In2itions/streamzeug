@@ -1,6 +1,6 @@
 /*
  * SPDX-FileCopyrightText: Streamzeug Copyright © 2025 ODMedia B.V.
- * SPDX-FileContributor: Author: Lucy (ChatGPT Assistant)
+ * SPDX-FileContributor: Lucy (ChatGPT Assistant)
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -19,26 +19,26 @@ import (
 	"code.videolan.org/rist/ristgo/libristwrapper"
 )
 
-// Normalizer wraps arbitrary transport input into a RIST sender
-// and internally connects it to a RIST receiver on loopback,
-// so downstream pipeline logic stays compatible.
+// Normalizer wraps arbitrary transport input into a local RIST sender/receiver pair.
 type Normalizer struct {
 	sender   *ristgo.Sender
 	receiver ristgo.Receiver
 }
 
-// New creates a Normalizer with paired RIST sender/receiver on loopback.
+// New creates a Normalizer that connects a RIST sender to a receiver on 127.0.0.1.
 func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, error) {
 	logger := logging.Log.With().Str("module", "normalizer").Str("identifier", identifier).Logger()
 
 	// --- Create receiver ---
-	logSettings := libristwrapper.CreateRistLoggingSettingsWithCB(createLogCB(identifier + "-rx"))
-	receiverCtx, err := libristwrapper.ReceiverCreate(libristwrapper.RistProfileMain, logSettings)
+	receiver, err := ristgo.ReceiverCreate(ctx, &ristgo.ReceiverConfig{
+		RistProfile:             libristwrapper.RistProfileMain,
+		LoggingCallbackFunction: createLogCB(identifier + "-rx"),
+		StatsCallbackFunction:   createStatsCB(s),
+		StatsInterval:           stats.StatsIntervalSeconds * 1000,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create RIST receiver: %w", err)
 	}
-	receiver := ristgo.Receiver{Ctx: receiverCtx}
-
 	logger.Info().Msg("Created internal RIST receiver (loopback mode)")
 
 	// --- Create sender ---
@@ -53,7 +53,7 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		return nil, fmt.Errorf("failed to create RIST sender: %w", err)
 	}
 
-	// --- Connect sender to receiver locally ---
+	// --- Connect sender → receiver locally ---
 	ristURL, _ := url.Parse("rist://127.0.0.1:5000")
 	peerCfg, err := ristgo.ParseRistURL(ristURL)
 	if err != nil {
@@ -61,8 +61,7 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		receiver.Destroy()
 		return nil, err
 	}
-
-	if err := sender.AddPeer(peerCfg); err != nil {
+	if _, err := sender.AddPeer(peerCfg); err != nil {
 		sender.Close()
 		receiver.Destroy()
 		return nil, err
@@ -76,7 +75,7 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 	}, nil
 }
 
-// Write pushes a packet into the RIST sender.
+// Write sends data into the RIST sender.
 func (n *Normalizer) Write(data []byte) error {
 	if n.sender == nil {
 		return fmt.Errorf("sender not initialized")
@@ -85,12 +84,12 @@ func (n *Normalizer) Write(data []byte) error {
 	return err
 }
 
-// Receiver exposes the RIST receiver (for mainloop consumption).
+// Receiver exposes the RIST receiver.
 func (n *Normalizer) Receiver() ristgo.Receiver {
 	return n.receiver
 }
 
-// Close shuts down sender and receiver.
+// Close cleans up the sender and receiver.
 func (n *Normalizer) Close() {
 	if n.sender != nil {
 		n.sender.Close()
@@ -98,7 +97,7 @@ func (n *Normalizer) Close() {
 	n.receiver.Destroy()
 }
 
-// --- Helpers for logging and stats (unchanged) ---
+// --- Logging & stats helpers ---
 
 func createStatsCB(s *stats.Stats) libristwrapper.StatsCallbackFunc {
 	return func(statsData *libristwrapper.StatsContainer) {
@@ -112,19 +111,17 @@ func createStatsCB(s *stats.Stats) libristwrapper.StatsCallbackFunc {
 
 func createLogCB(identifier string) libristwrapper.LogCallbackFunc {
 	logger := logging.Log.With().Str("module", "normalizer").Str("identifier", identifier).Logger()
-	return func(loglevel libristwrapper.RistLogLevel, logmessage string) {
-		logmessage = strings.TrimSuffix(logmessage, "\n")
-		switch loglevel {
+	return func(level libristwrapper.RistLogLevel, msg string) {
+		msg = strings.TrimSuffix(msg, "\n")
+		switch level {
 		case libristwrapper.LogLevelError:
-			logger.Error().Msg(logmessage)
+			logger.Error().Msg(msg)
 		case libristwrapper.LogLevelWarn:
-			logger.Warn().Msg(logmessage)
-		case libristwrapper.LogLevelNotice:
-			logger.Info().Msg(logmessage)
-		case libristwrapper.LogLevelInfo:
-			logger.Info().Msg(logmessage)
+			logger.Warn().Msg(msg)
+		case libristwrapper.LogLevelNotice, libristwrapper.LogLevelInfo:
+			logger.Info().Msg(msg)
 		case libristwrapper.LogLevelDebug:
-			logger.Debug().Msg(logmessage)
+			logger.Debug().Msg(msg)
 		}
 	}
 }
