@@ -1,6 +1,7 @@
 /*
  * SPDX-FileCopyrightText: Streamzeug Copyright © 2021 ODMedia B.V. All right reserved.
  * SPDX-FileContributor: Author: Gijs Peskens <gijs@peskens.net>
+ * SPDX-FileContributor: Lucy (ChatGPT Assistant)
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -38,6 +39,7 @@ func (f *Flow) Status() *mainloop.Status {
 	mlStatus := f.m.Status()
 	f.configLock.Lock()
 	defer f.configLock.Unlock()
+
 	if f.config.MinimalBitrate > 0 && f.config.MaxPacketTimeMS > 0 {
 		if mlStatus.Bitrate < f.config.MinimalBitrate || mlStatus.MsSinceLastPacket > f.config.MaxPacketTimeMS {
 			mlStatus.Status = "NOT-OK"
@@ -48,26 +50,41 @@ func (f *Flow) Status() *mainloop.Status {
 }
 
 func (f *Flow) Stop() {
+	logging.Log.Info().Str("identifier", f.identifier).Msg("Stopping flow")
 	f.cancel()
+
 	for _, o := range f.configuredOutputs {
 		o.out.Close()
+	}
+
+	for _, i := range f.configuredInputs {
+		i.Close()
+	}
+
+	if f.receiver != nil {
+		logging.Log.Debug().Str("identifier", f.identifier).Msg("Closing RIST receiver")
+		f.receiver.Destroy()
 	}
 }
 
 func (f *Flow) Wait(timeout time.Duration) {
+	logging.Log.Info().Str("identifier", f.identifier).Msg("Waiting for flow cleanup")
+
 	f.m.Wait(timeout)
 	c := make(chan bool)
+
 	go func() {
-		f.receiver.Destroy()
+		if f.receiver != nil {
+			f.receiver.Destroy()
+		}
 		f.outputWait.Wait()
 		c <- true
 	}()
+
 	select {
 	case <-c:
-		logging.Log.Info().Str("identifier", f.identifier).Msg("cleanup complete")
-		return
+		logging.Log.Info().Str("identifier", f.identifier).Msg("Cleanup complete")
 	case <-time.After(timeout):
-		logging.Log.Error().Str("identifier", f.identifier).Msg("cleanup timeout")
-		return
+		logging.Log.Error().Str("identifier", f.identifier).Msg("Cleanup timeout")
 	}
 }

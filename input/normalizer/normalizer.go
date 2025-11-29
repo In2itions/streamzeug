@@ -8,8 +8,6 @@ package normalizer
 
 import (
 	"context"
-	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/In2itions/streamzeug/logging"
@@ -20,21 +18,16 @@ import (
 )
 
 // Normalizer wraps arbitrary transport input into a RIST sender
-// and internally connects it to a RIST receiver on loopback,
-// so downstream pipeline logic stays compatible.
+// so that all downstream pipeline logic stays compatible.
 type Normalizer struct {
-	sender   ristgo.Sender
-	receiver ristgo.Receiver
+	sender ristgo.Sender
 }
 
-// New creates a Normalizer with paired RIST sender/receiver on loopback.
+// New creates a Normalizer with its own RIST sender instance.
 func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, error) {
-	logger := logging.Log.With().Str("module", "normalizer").Str("identifier", identifier).Logger()
-
-	// --- Create receiver ---
-	receiver, err := ristgo.ReceiverCreate(ctx, &ristgo.ReceiverConfig{
+	ristsender, err := ristgo.SenderCreate(ctx, &ristgo.SenderConfig{
 		RistProfile:             libristwrapper.ProfileMain,
-		LoggingCallbackFunction: createLogCB(identifier + "-rx"),
+		LoggingCallbackFunction: createLogCB(identifier),
 		StatsCallbackFunction:   createStatsCB(s),
 		StatsInterval:           stats.StatsIntervalSeconds * 1000,
 	})
@@ -42,45 +35,7 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		return nil, err
 	}
 
-	// Find receiver bind address (library-dependent)
-	addr := receiver.GetAddress()
-	if addr == "" {
-		addr = "127.0.0.1:0"
-	}
-	logger.Info().Msgf("Created internal RIST receiver at %s", addr)
-
-	// --- Create sender ---
-	sender, err := ristgo.SenderCreate(ctx, &ristgo.SenderConfig{
-		RistProfile:             libristwrapper.ProfileMain,
-		LoggingCallbackFunction: createLogCB(identifier + "-tx"),
-		StatsCallbackFunction:   createStatsCB(s),
-		StatsInterval:           stats.StatsIntervalSeconds * 1000,
-	})
-	if err != nil {
-		receiver.Close()
-		return nil, err
-	}
-
-	// --- Connect sender to receiver locally ---
-	ristURL, _ := url.Parse(fmt.Sprintf("rist://%s", addr))
-	peerCfg, err := ristgo.ParseRistURL(ristURL)
-	if err != nil {
-		sender.Close()
-		receiver.Close()
-		return nil, err
-	}
-	if _, err := sender.AddPeer(peerCfg); err != nil {
-		sender.Close()
-		receiver.Close()
-		return nil, err
-	}
-
-	logger.Info().Msgf("Connected RIST sender→receiver loopback at %s", addr)
-
-	return &Normalizer{
-		sender:   sender,
-		receiver: receiver,
-	}, nil
+	return &Normalizer{sender: ristsender}, nil
 }
 
 // Write pushes a packet into the RIST sender.
@@ -88,22 +43,14 @@ func (n *Normalizer) Write(data []byte) error {
 	return n.sender.Write(data)
 }
 
-// Receiver exposes the RIST receiver (for mainloop consumption).
-func (n *Normalizer) Receiver() ristgo.Receiver {
-	return n.receiver
-}
-
-// Close shuts down sender and receiver.
+// Close shuts down the RIST sender.
 func (n *Normalizer) Close() {
 	if n.sender != nil {
 		n.sender.Close()
 	}
-	if n.receiver != nil {
-		n.receiver.Close()
-	}
 }
 
-// --- Helpers for logging and stats (unchanged) ---
+// --- Helpers for logging and stats (same pattern as RIST input) ---
 
 func createStatsCB(s *stats.Stats) libristwrapper.StatsCallbackFunc {
 	return func(statsData *libristwrapper.StatsContainer) {
