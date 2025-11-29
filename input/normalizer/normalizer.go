@@ -1,13 +1,8 @@
-/*
- * SPDX-FileCopyrightText: Streamzeug Copyright © 2025 ODMedia B.V.
- * SPDX-FileContributor: Author: Lucy (ChatGPT Assistant)
- * SPDX-License-Identifier: GPL-3.0-or-later
- */
-
 package normalizer
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"github.com/In2itions/streamzeug/logging"
@@ -17,17 +12,18 @@ import (
 	"code.videolan.org/rist/ristgo/libristwrapper"
 )
 
-// Normalizer wraps arbitrary transport input into a RIST sender
-// so that all downstream pipeline logic stays compatible.
 type Normalizer struct {
-	sender ristgo.Sender
+	sender   *ristgo.Sender
+	receiver ristgo.Receiver
 }
 
-// New creates a Normalizer with its own RIST sender instance.
 func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, error) {
-	ristsender, err := ristgo.SenderCreate(ctx, &ristgo.SenderConfig{
-		RistProfile:             libristwrapper.ProfileMain,
-		LoggingCallbackFunction: createLogCB(identifier),
+	logger := logging.Log.With().Str("module", "normalizer").Str("identifier", identifier).Logger()
+
+	// --- Create receiver (same as RIST input) ---
+	receiver, err := ristgo.ReceiverCreate(ctx, &ristgo.ReceiverConfig{
+		RistProfile:             libristwrapper.RistProfileSimple,
+		LoggingCallbackFunction: createLogCB(identifier + "-rx"),
 		StatsCallbackFunction:   createStatsCB(s),
 		StatsInterval:           stats.StatsIntervalSeconds * 1000,
 	})
@@ -35,22 +31,59 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		return nil, err
 	}
 
-	return &Normalizer{sender: ristsender}, nil
+	// --- Create sender ---
+	sender, err := ristgo.CreateSender(ctx, &ristgo.SenderConfig{
+		RistProfile:             libristwrapper.RistProfileSimple,
+		LoggingCallbackFunction: createLogCB(identifier + "-tx"),
+		StatsCallbackFunction:   createStatsCB(s),
+		StatsInterval:           stats.StatsIntervalSeconds * 1000,
+	})
+	if err != nil {
+		receiver.Destroy()
+		return nil, err
+	}
+
+	// --- Connect sender → receiver internally ---
+	ristURL, _ := url.Parse("rist://127.0.0.1:0")
+	peerConfig, err := ristgo.ParseRistURL(ristURL)
+	if err != nil {
+		sender.Close()
+		receiver.Destroy()
+		return nil, err
+	}
+
+	if _, err := sender.AddPeer(peerConfig); err != nil {
+		sender.Close()
+		receiver.Destroy()
+		return nil, err
+	}
+
+	logger.Info().Msg("Connected RIST sender→receiver loopback")
+
+	return &Normalizer{
+		sender:   sender,
+		receiver: receiver,
+	}, nil
 }
 
-// Write pushes a packet into the RIST sender.
 func (n *Normalizer) Write(data []byte) error {
-	return n.sender.Write(data)
+	if n.sender == nil {
+		return nil
+	}
+	_, err := n.sender.Write(data)
+	return err
 }
 
-// Close shuts down the RIST sender.
+func (n *Normalizer) Receiver() ristgo.Receiver {
+	return n.receiver
+}
+
 func (n *Normalizer) Close() {
 	if n.sender != nil {
 		n.sender.Close()
 	}
+	n.receiver.Destroy()
 }
-
-// --- Helpers for logging and stats (same pattern as RIST input) ---
 
 func createStatsCB(s *stats.Stats) libristwrapper.StatsCallbackFunc {
 	return func(statsData *libristwrapper.StatsContainer) {
@@ -71,9 +104,7 @@ func createLogCB(identifier string) libristwrapper.LogCallbackFunc {
 			logger.Error().Msg(logmessage)
 		case libristwrapper.LogLevelWarn:
 			logger.Warn().Msg(logmessage)
-		case libristwrapper.LogLevelNotice:
-			logger.Info().Msg(logmessage)
-		case libristwrapper.LogLevelInfo:
+		case libristwrapper.LogLevelNotice, libristwrapper.LogLevelInfo:
 			logger.Info().Msg(logmessage)
 		case libristwrapper.LogLevelDebug:
 			logger.Debug().Msg(logmessage)
