@@ -2,6 +2,7 @@ package normalizer
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -20,31 +21,32 @@ type Normalizer struct {
 func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, error) {
 	logger := logging.Log.With().Str("module", "normalizer").Str("identifier", identifier).Logger()
 
-	// --- Create receiver (same as RIST input) ---
+	// --- Create RIST receiver ---
 	receiver, err := ristgo.ReceiverCreate(ctx, &ristgo.ReceiverConfig{
-		RistProfile:             libristwrapper.RistProfileSimple,
+		RistProfile:             libristwrapper.RistProfileMain,
 		LoggingCallbackFunction: createLogCB(identifier + "-rx"),
 		StatsCallbackFunction:   createStatsCB(s),
 		StatsInterval:           stats.StatsIntervalSeconds * 1000,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create RIST receiver: %w", err)
 	}
+	logger.Info().Msg("Created internal RIST receiver (loopback mode)")
 
-	// --- Create sender ---
+	// --- Create RIST sender ---
 	sender, err := ristgo.CreateSender(ctx, &ristgo.SenderConfig{
-		RistProfile:             libristwrapper.RistProfileSimple,
+		RistProfile:             libristwrapper.RistProfileMain,
 		LoggingCallbackFunction: createLogCB(identifier + "-tx"),
 		StatsCallbackFunction:   createStatsCB(s),
 		StatsInterval:           stats.StatsIntervalSeconds * 1000,
 	})
 	if err != nil {
 		receiver.Destroy()
-		return nil, err
+		return nil, fmt.Errorf("failed to create RIST sender: %w", err)
 	}
 
 	// --- Connect sender → receiver internally ---
-	ristURL, _ := url.Parse("rist://127.0.0.1:0")
+	ristURL, _ := url.Parse("rist://127.0.0.1:5000")
 	peerConfig, err := ristgo.ParseRistURL(ristURL)
 	if err != nil {
 		sender.Close()
@@ -58,7 +60,7 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		return nil, err
 	}
 
-	logger.Info().Msg("Connected RIST sender→receiver loopback")
+	logger.Info().Msg("Connected RIST sender→receiver loopback at 127.0.0.1:5000")
 
 	return &Normalizer{
 		sender:   sender,
@@ -68,7 +70,7 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 
 func (n *Normalizer) Write(data []byte) error {
 	if n.sender == nil {
-		return nil
+		return fmt.Errorf("sender not initialized")
 	}
 	_, err := n.sender.Write(data)
 	return err
@@ -84,6 +86,8 @@ func (n *Normalizer) Close() {
 	}
 	n.receiver.Destroy()
 }
+
+// --- Helpers ---
 
 func createStatsCB(s *stats.Stats) libristwrapper.StatsCallbackFunc {
 	return func(statsData *libristwrapper.StatsContainer) {
