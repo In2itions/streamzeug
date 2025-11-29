@@ -21,7 +21,7 @@ type Normalizer struct {
 func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, error) {
 	logger := logging.Log.With().Str("module", "normalizer").Str("identifier", identifier).Logger()
 
-	// --- Create RIST receiver ---
+	// --- Create receiver ---
 	receiver, err := ristgo.ReceiverCreate(ctx, &ristgo.ReceiverConfig{
 		RistProfile:             libristwrapper.RistProfileMain,
 		LoggingCallbackFunction: createLogCB(identifier + "-rx"),
@@ -31,9 +31,8 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to create RIST receiver: %w", err)
 	}
-	logger.Info().Msg("Created internal RIST receiver (loopback mode)")
 
-	// --- Create RIST sender ---
+	// --- Create sender ---
 	sender, err := ristgo.CreateSender(ctx, &ristgo.SenderConfig{
 		RistProfile:             libristwrapper.RistProfileMain,
 		LoggingCallbackFunction: createLogCB(identifier + "-tx"),
@@ -87,8 +86,6 @@ func (n *Normalizer) Close() {
 	n.receiver.Destroy()
 }
 
-// --- Helpers ---
-
 func createStatsCB(s *stats.Stats) libristwrapper.StatsCallbackFunc {
 	return func(statsData *libristwrapper.StatsContainer) {
 		if statsData.ReceiverFlowStats != nil {
@@ -101,17 +98,17 @@ func createStatsCB(s *stats.Stats) libristwrapper.StatsCallbackFunc {
 
 func createLogCB(identifier string) libristwrapper.LogCallbackFunc {
 	logger := logging.Log.With().Str("module", "normalizer").Str("identifier", identifier).Logger()
-	return func(loglevel libristwrapper.RistLogLevel, logmessage string) {
-		logmessage = strings.TrimSuffix(logmessage, "\n")
-		switch loglevel {
+	return func(level libristwrapper.RistLogLevel, msg string) {
+		msg = strings.TrimSuffix(msg, "\n")
+		switch level {
 		case libristwrapper.LogLevelError:
-			logger.Error().Msg(logmessage)
+			logger.Error().Msg(msg)
 		case libristwrapper.LogLevelWarn:
-			logger.Warn().Msg(logmessage)
+			logger.Warn().Msg(msg)
 		case libristwrapper.LogLevelNotice, libristwrapper.LogLevelInfo:
-			logger.Info().Msg(logmessage)
+			logger.Info().Msg(msg)
 		case libristwrapper.LogLevelDebug:
-			logger.Debug().Msg(logmessage)
+			logger.Debug().Msg(msg)
 		}
 	}
 }
