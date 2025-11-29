@@ -1,10 +1,10 @@
 /*
- * SPDX-FileCopyrightText: Streamzeug Copyright © 2025 ODMedia B.V.
+ * SPDX-FileCopyrightText: Streamzeug Copyright © 2021–2025 ODMedia B.V.
  * SPDX-FileContributor: Lucy (ChatGPT Assistant)
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-package normalizer
+package rist
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/In2itions/streamzeug/input"
 	"github.com/In2itions/streamzeug/logging"
 	"github.com/In2itions/streamzeug/stats"
 
@@ -19,85 +20,61 @@ import (
 	"code.videolan.org/rist/ristgo/libristwrapper"
 )
 
-// Normalizer wraps arbitrary transport input into a local RIST sender/receiver pair.
-type Normalizer struct {
-	sender   *ristgo.Sender
-	receiver ristgo.Receiver
+// ristinput represents a RIST input connection.
+type ristinput struct {
+	r ristgo.Receiver
+	p int
 }
 
-// New creates a Normalizer that connects a RIST sender to a receiver on 127.0.0.1.
-func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, error) {
-	logger := logging.Log.With().Str("module", "normalizer").Str("identifier", identifier).Logger()
+// SetupReceiver creates a RIST receiver with logging and stats.
+func SetupReceiver(ctx context.Context, identifier string, profile libristwrapper.RistProfile, recoverysize int, s *stats.Stats) (ristgo.Receiver, error) {
+	logger := logging.Log.With().Str("module", "rist-input").Str("identifier", identifier).Logger()
 
-	// --- Create receiver ---
-	receiver, err := ristgo.ReceiverCreate(ctx, &ristgo.ReceiverConfig{
-		RistProfile:             libristwrapper.RistProfileMain,
-		LoggingCallbackFunction: createLogCB(identifier + "-rx"),
+	logger.Info().Msg("Starting RIST receiver")
+
+	r, err := ristgo.ReceiverCreate(ctx, &ristgo.ReceiverConfig{
+		RistProfile:             profile,
+		LoggingCallbackFunction: createLogCB(identifier),
 		StatsCallbackFunction:   createStatsCB(s),
 		StatsInterval:           stats.StatsIntervalSeconds * 1000,
+		RecoveryBufferSize:      recoverysize,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create RIST receiver: %w", err)
+		return r, fmt.Errorf("failed to create receiver: %w", err)
 	}
-	logger.Info().Msg("Created internal RIST receiver (loopback mode)")
 
-	// --- Create sender ---
-	sender, err := ristgo.SenderCreate(ctx, &ristgo.SenderConfig{
-		RistProfile:             libristwrapper.RistProfileMain,
-		LoggingCallbackFunction: createLogCB(identifier + "-tx"),
-		StatsCallbackFunction:   createStatsCB(s),
-		StatsInterval:           stats.StatsIntervalSeconds * 1000,
-	})
+	return r, nil
+}
+
+// SetupRistInput registers an input peer to an existing RIST receiver.
+func SetupRistInput(u *url.URL, identifier string, r ristgo.Receiver) (input.Input, error) {
+	logger := logging.Log.With().Str("module", "rist-input").Str("identifier", identifier).Logger()
+	logger.Info().Msgf("Setting up RIST input: %s", u.String())
+
+	peerConfig, err := ristgo.ParseRistURL(u)
 	if err != nil {
-		receiver.Destroy()
-		return nil, fmt.Errorf("failed to create RIST sender: %w", err)
+		return nil, fmt.Errorf("failed to parse RIST URL: %w", err)
 	}
 
-	// --- Connect sender → receiver locally ---
-	ristURL, _ := url.Parse("rist://127.0.0.1:5000")
-	peerCfg, err := ristgo.ParseRistURL(ristURL)
+	id, err := r.AddPeer(peerConfig)
 	if err != nil {
-		sender.Close()
-		receiver.Destroy()
-		return nil, err
-	}
-	if _, err := sender.AddPeer(peerCfg); err != nil {
-		sender.Close()
-		receiver.Destroy()
-		return nil, err
+		return nil, fmt.Errorf("failed to add peer: %w", err)
 	}
 
-	logger.Info().Msg("Connected RIST sender→receiver loopback at 127.0.0.1:5000")
-
-	return &Normalizer{
-		sender:   sender,
-		receiver: receiver,
+	return &ristinput{
+		r: r,
+		p: id,
 	}, nil
 }
 
-// Write sends data into the RIST sender.
-func (n *Normalizer) Write(data []byte) error {
-	if n.sender == nil {
-		return fmt.Errorf("sender not initialized")
+// Close removes the RIST peer from the receiver.
+func (i *ristinput) Close() {
+	if err := i.r.RemovePeer(i.p); err != nil {
+		logging.Log.Error().Err(err).Msg("error removing RIST peer")
 	}
-	_, err := n.sender.Write(data)
-	return err
 }
 
-// Receiver exposes the RIST receiver.
-func (n *Normalizer) Receiver() ristgo.Receiver {
-	return n.receiver
-}
-
-// Close cleans up the sender and receiver.
-func (n *Normalizer) Close() {
-	if n.sender != nil {
-		n.sender.Close()
-	}
-	n.receiver.Destroy()
-}
-
-// --- Logging & stats helpers ---
+// --- Helper callbacks ---
 
 func createStatsCB(s *stats.Stats) libristwrapper.StatsCallbackFunc {
 	return func(statsData *libristwrapper.StatsContainer) {
@@ -110,7 +87,7 @@ func createStatsCB(s *stats.Stats) libristwrapper.StatsCallbackFunc {
 }
 
 func createLogCB(identifier string) libristwrapper.LogCallbackFunc {
-	logger := logging.Log.With().Str("module", "normalizer").Str("identifier", identifier).Logger()
+	logger := logging.Log.With().Str("module", "rist-input").Str("identifier", identifier).Logger()
 	return func(level libristwrapper.RistLogLevel, msg string) {
 		msg = strings.TrimSuffix(msg, "\n")
 		switch level {
