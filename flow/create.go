@@ -98,7 +98,7 @@ func CreateFlow(ctx context.Context, c *config.Flow) (*Flow, error) {
 		flow.receiver = nil
 
 		// ✅ Create a local mainloop for UDP-based flows
-		flow.m = mainloop.New()
+		flow.m = mainloop.NewMainloop(flow.context, nil, c.Identifier)
 		logging.Log.Warn().
 			Str("identifier", c.Identifier).
 			Msg("No mainloop was assigned — created local mainloop for UDP flow to ensure stability")
