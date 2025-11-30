@@ -134,7 +134,7 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 	logger.Info().Msg("[STEP N7] Created in-memory RIST normalizer (sender→receiver fallback mode)")
 	time.Sleep(time.Second)
 	return norm, nil
-
+}
 
 // Write feeds packets into the RIST pipeline or in-memory channel.
 func (n *Normalizer) Write(data []byte) error {
