@@ -77,12 +77,12 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 	listener, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		logger.Warn().Err(err).Msg("[STEP N4-FAIL] Failed to bind dynamic UDP port — fallback to memory mode")
-		return norm.setupInMemory(ctx, logger)
+		goto fallback
 	}
 	localPort := listener.LocalAddr().(*net.UDPAddr).Port
 	listener.Close()
 
-	// Create separate URLs for TX and RX sides
+	// Use two separate URLs: sender (connect) and receiver (listen)
 	senderURL, _ := url.Parse(fmt.Sprintf("rist://127.0.0.1:%d?profile=simple&cname=%s-tx", localPort, identifier))
 	receiverURL, _ := url.Parse(fmt.Sprintf("rist://@127.0.0.1:%d?profile=simple&cname=%s-rx", localPort, identifier))
 
@@ -90,33 +90,32 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 	receiverPeer, errReceiver := ristgo.ParseRistURL(receiverURL)
 	if errSender != nil || errReceiver != nil {
 		logger.Warn().Err(errSender).Err(errReceiver).Msg("[STEP N4-FAIL] Failed to parse RIST URLs — fallback to memory mode")
-		return norm.setupInMemory(ctx, logger)
+		goto fallback
 	}
 
 	logger.Debug().Msgf("[STEP N4a] Using dynamic RIST bridge: TX=%s RX=%s", senderURL.String(), receiverURL.String())
 
 	if _, err := sender.AddPeer(senderPeer); err != nil {
 		logger.Warn().Err(err).Msg("[STEP N4b-FAIL] Failed to add sender peer — fallback to memory mode")
-		return norm.setupInMemory(ctx, logger)
+		goto fallback
 	}
 	logger.Info().Msgf("[STEP N4b] Sender peer added on %s", senderURL.String())
 
 	if _, err := receiver.AddPeer(receiverPeer); err != nil {
 		logger.Warn().Err(err).Msg("[STEP N4c-FAIL] Failed to add receiver peer — fallback to memory mode")
-		return norm.setupInMemory(ctx, logger)
+		goto fallback
 	}
 
 	logger.Info().Msgf("[STEP N4c] Receiver peer added — dynamic UDP bridge active (TX→RX on port %d)", localPort)
 	time.Sleep(time.Second)
 	return norm, nil
-}
 
-// setupInMemory activates fallback in-memory RIST bridge.
-func (n *Normalizer) setupInMemory(ctx context.Context, logger logging.Logger) (*Normalizer, error) {
+fallback:
+	// --- In-memory fallback ---
 	logger.Warn().Msg("[STEP N5] Activating in-memory fallback bridge (no UDP peer)")
-	n.inMemory = true
+	norm.inMemory = true
 	readCtx, cancel := context.WithCancel(ctx)
-	n.cancelFunc = cancel
+	norm.cancelFunc = cancel
 
 	go func() {
 		logger.Info().Msg("[STEP N6] In-memory RIST bridge goroutine started (sender→receiver)")
@@ -126,13 +125,13 @@ func (n *Normalizer) setupInMemory(ctx context.Context, logger logging.Logger) (
 			case <-readCtx.Done():
 				logger.Info().Msg("[STEP N6-END] In-memory RIST bridge stopped (context canceled)")
 				return
-			case pkt := <-n.dataCh:
+			case pkt := <-norm.dataCh:
 				packetCount++
 				if packetCount%100 == 0 {
 					logger.Debug().Int("packets", packetCount).Msg("[INMEM] Forwarding packet from dataCh to OutChan")
 				}
 				select {
-				case n.OutChan <- pkt:
+				case norm.OutChan <- pkt:
 				default:
 					logger.Warn().Msg("[INMEM] OutChan full — dropping packet")
 				}
@@ -142,7 +141,7 @@ func (n *Normalizer) setupInMemory(ctx context.Context, logger logging.Logger) (
 
 	logger.Info().Msg("[STEP N7] Created in-memory RIST normalizer (sender→receiver fallback mode)")
 	time.Sleep(time.Second)
-	return n, nil
+	return norm, nil
 }
 
 // Write feeds packets into the RIST pipeline or in-memory channel.
