@@ -61,17 +61,22 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		OutChan:  make(chan []byte, 4096),
 	}
 
-	// --- Try to connect sender and receiver via local UDP peer ---
-	ristURL, _ := url.Parse("rist://127.0.0.1:0")
+	// --- Force a proper UDP peer for local bridging ---
+	ristURL, _ := url.Parse("rist://@127.0.0.1:9000") // explicit port to force UDP bind
 	peerConfig, err := ristgo.ParseRistURL(ristURL)
 	if err == nil {
 		if _, err := sender.AddPeer(peerConfig); err == nil {
-			logger.Info().Msg("Connected RIST sender→receiver via local UDP loopback (127.0.0.1:0)")
-			return norm, nil
+			// Now the sender listens on UDP:9000 and receiver will connect to it
+			if _, err := receiver.AddPeer(peerConfig); err == nil {
+				logger.Info().Msg("RIST normalizer bridged via UDP loopback (127.0.0.1:9000)")
+				return norm, nil
+			}
+			logger.Warn().Err(err).Msg("Failed to connect receiver peer — fallback to memory")
+		} else {
+			logger.Warn().Err(err).Msg("Failed to create sender peer — fallback to memory")
 		}
-		logger.Warn().Err(err).Msg("Failed to create UDP peer — switching to in-memory mode")
 	} else {
-		logger.Warn().Err(err).Msg("Failed to parse RIST URL — switching to in-memory mode")
+		logger.Warn().Err(err).Msg("Failed to parse RIST URL — fallback to memory")
 	}
 
 	// --- In-memory fallback ---
