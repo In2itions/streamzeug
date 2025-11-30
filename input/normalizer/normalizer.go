@@ -91,7 +91,7 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 				if packetCount%1000 == 0 {
 					logger.Debug().Int("packets", packetCount).Msg("Processed in-memory packets")
 				}
-				_ = pkt // no injection API yet
+				_ = pkt // currently no injection API
 			}
 		}
 	}()
@@ -123,12 +123,9 @@ func (n *Normalizer) Receiver() ristgo.Receiver {
 	return n.receiver
 }
 
-// ReceiverFlow returns the RIST receiver flow for mainloop attachment (UDP path support).
-func (n *Normalizer) ReceiverFlow() ristgo.ReceiverFlow {
-	if n == nil || n.receiver == nil {
-		return nil
-	}
-	return n.receiver.GetFlow()
+// ReceiverFlow returns the RIST receiver itself for mainloop attachment (UDP path support).
+func (n *Normalizer) ReceiverFlow() ristgo.Receiver {
+	return n.receiver
 }
 
 // Close gracefully stops all goroutines and RIST handles.
