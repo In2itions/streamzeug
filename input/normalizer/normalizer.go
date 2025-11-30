@@ -91,8 +91,7 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 				if packetCount%1000 == 0 {
 					logger.Debug().Int("packets", packetCount).Msg("Processed in-memory packets")
 				}
-				// simulate delivery into RIST receiver for stats
-				_ = pkt // currently no injection API in this binding
+				_ = pkt // no injection API yet
 			}
 		}
 	}()
@@ -111,7 +110,6 @@ func (n *Normalizer) Write(data []byte) error {
 		select {
 		case n.dataCh <- append([]byte(nil), data...):
 		default:
-			// drop if channel full
 		}
 		return nil
 	}
@@ -123,6 +121,14 @@ func (n *Normalizer) Write(data []byte) error {
 // Receiver exposes the RIST receiver handle for downstream consumers.
 func (n *Normalizer) Receiver() ristgo.Receiver {
 	return n.receiver
+}
+
+// ReceiverFlow returns the RIST receiver flow for mainloop attachment (UDP path support).
+func (n *Normalizer) ReceiverFlow() ristgo.ReceiverFlow {
+	if n == nil || n.receiver == nil {
+		return nil
+	}
+	return n.receiver.GetFlow()
 }
 
 // Close gracefully stops all goroutines and RIST handles.
