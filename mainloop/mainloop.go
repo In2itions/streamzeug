@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Streamzeug Copyright © 2021-2025 ODMedia B.V.
+ * SPDX-FileCopyrightText: Streamzeug Copyright © 2021–2025 ODMedia B.V.
  * SPDX-FileContributor: Author: Gijs Peskens <gijs@peskens.net>
  * SPDX-FileContributor: Lucy (ChatGPT Assistant)
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -63,7 +63,7 @@ func (m *Mainloop) removeOutputByID(idx int) {
 
 // deleteOutput closes and removes an output from map
 func (m *Mainloop) deleteOutput(idx int, o output.Output) {
-	m.logger.Info().Msgf("deleting output: %s", o.String())
+	m.logger.Info().Msgf("[ML-DEL] deleting output: %s", o.String())
 	close(m.outputs[idx].dataChan)
 	delete(m.outputs, idx)
 }
@@ -71,10 +71,10 @@ func (m *Mainloop) deleteOutput(idx int, o output.Output) {
 // AddOutput registers a new output
 func (m *Mainloop) AddOutput(o output.Output) {
 	if m == nil {
-		logging.Log.Warn().Msg("Mainloop is nil — skipping AddOutput() to prevent crash")
+		logging.Log.Warn().Msg("[ML-ADD] Mainloop is nil — skipping AddOutput()")
 		return
 	}
-	m.logger.Info().Msgf("adding output %s", o.String())
+	m.logger.Info().Msgf("[ML-ADD] adding output %s", o.String())
 	select {
 	case <-m.ctx.Done():
 		return
@@ -98,16 +98,21 @@ func (m *Mainloop) Wait(timeout time.Duration) {
 
 // NewMainloop constructs a mainloop and starts its receive loop
 func NewMainloop(ctx context.Context, flow ristgo.ReceiverFlow, identifier string) *Mainloop {
+	logger := logging.Log.With().Str("identifier", identifier).Logger()
+	logger.Info().Msg("[ML-STEP1] Creating Mainloop")
+
 	m := &Mainloop{
 		ctx:          ctx,
 		flow:         flow,
-		logger:       logging.Log.With().Str("identifier", identifier).Logger(),
+		logger:       logger,
 		outputs:      make(map[int]*out),
 		outPutAdd:    make(chan output.Output, 4),
 		outPutRemove: make(chan output.Output, 4),
 		outRemoveIdx: make(chan int, 16),
 	}
 
+	time.Sleep(500 * time.Millisecond)
+	logger.Info().Msg("[ML-STEP2] Launching receive loop goroutine")
 	go receiveLoop(m)
 	return m
 }
@@ -120,45 +125,52 @@ func receiveLoop(m *Mainloop) {
 	m.primaryInputStatus.lastPacketTime = time.Now()
 	m.lastStatusCall = m.primaryInputStatus.lastPacketTime
 
-	// 🛡 Safety guard: skip loop if no RIST flow (UDP/in-memory mode)
+	// Safety guard: skip loop if no RIST flow (UDP/in-memory mode)
 	if m.flow == nil {
-		m.logger.Warn().Msg("Mainloop started without RIST flow (UDP/in-memory mode) — skipping receiveLoop")
+		m.logger.Warn().Msg("[ML-STEP3] Mainloop started without RIST flow (UDP/in-memory mode) — skipping receiveLoop")
 		return
 	}
 
-	m.logger.Info().Msg("receiver mainloop started")
+	m.logger.Info().Msg("[ML-STEP4] RIST receiver mainloop started")
 	outputidx := 0
 	expectedSeq := uint16(0)
 	lastDiscontinuityMsg := time.Time{}
 	discontinuitiesSinceLastMsg := 0
+	packetCount := 0
 
 main:
 	for {
 		select {
 		case <-m.ctx.Done():
+			m.logger.Warn().Msg("[ML-STOP] Context canceled — exiting mainloop")
 			break main
 
 		case rb, ok := <-m.flow.DataChannel():
 			if !ok {
+				m.logger.Warn().Msg("[ML-STOP] DataChannel closed — exiting mainloop")
 				break main
+			}
+
+			packetCount++
+			if packetCount%500 == 0 {
+				m.logger.Debug().Int("packets", packetCount).Msg("[ML-DATA] Processing incoming packets from RIST flow")
 			}
 
 			discontinuity := rb.Discontinuity || rb.SeqNo != uint32(expectedSeq)
 			if discontinuity {
 				m.primaryInputStatus.discontinuitycount++
 				discontinuitiesSinceLastMsg++
+				m.logger.Trace().Int("seq", int(rb.SeqNo)).Msg("[ML-DATA] Detected discontinuity in sequence")
 			}
 
-			// Log discontinuities every 5s max
 			if discontinuitiesSinceLastMsg > 0 && time.Since(lastDiscontinuityMsg) >= 5*time.Second {
-				m.logger.Error().Int("count", discontinuitiesSinceLastMsg).Msg("discontinuity!")
+				m.logger.Error().Int("count", discontinuitiesSinceLastMsg).Msg("[ML-WARN] discontinuity burst detected")
 				lastDiscontinuityMsg = time.Now()
 				discontinuitiesSinceLastMsg = 0
 			}
 
 			expectedSeq = uint16(rb.SeqNo) + 1
 
-			// Update stats
 			m.statusLock.Lock()
 			m.primaryInputStatus.packetcount++
 			m.primaryInputStatus.packetcountsince++
@@ -166,20 +178,26 @@ main:
 			m.primaryInputStatus.lastPacketTime = time.Now()
 			m.statusLock.Unlock()
 
+			// Trace packet forwarding
+			if packetCount%200 == 0 {
+				m.logger.Trace().Int("len", len(rb.Data)).Msg("[ML-DATA] Forwarding packet to outputs")
+			}
 			m.writeOutputs(rb)
 
 		case output := <-m.outPutAdd:
 			m.statusLock.Lock()
 			m.addOutput(output, outputidx)
+			m.logger.Info().Int("outputIdx", outputidx).Msg("[ML-ADD] Output added to mainloop")
 			outputidx++
 			m.statusLock.Unlock()
 
 		case idx := <-m.outRemoveIdx:
 			m.statusLock.Lock()
 			if o, ok := m.outputs[idx]; ok {
+				m.logger.Debug().Int("idx", idx).Msg("[ML-DEL] Removing output by ID")
 				m.deleteOutput(idx, o.w)
 			} else {
-				m.logger.Error().Msgf("couldn't delete output at index: %d (not found)", idx)
+				m.logger.Error().Msgf("[ML-DEL-FAIL] could not delete output at index %d (not found)", idx)
 			}
 			m.statusLock.Unlock()
 
@@ -188,6 +206,7 @@ main:
 			m.statusLock.Lock()
 			for idx, o := range m.outputs {
 				if o.w == output {
+					m.logger.Debug().Int("idx", idx).Msg("[ML-DEL] Removing output by reference")
 					found = true
 					delete(m.outputs, idx)
 					break
@@ -195,7 +214,7 @@ main:
 			}
 			m.statusLock.Unlock()
 			if !found {
-				m.logger.Error().Msgf("couldn't delete output: %s (not found)", output.String())
+				m.logger.Error().Msgf("[ML-DEL-FAIL] could not delete output: %s (not found)", output.String())
 			}
 		}
 	}
@@ -203,5 +222,5 @@ main:
 	close(m.outPutAdd)
 	close(m.outPutRemove)
 	close(m.outRemoveIdx)
-	m.logger.Info().Msg("mainloop terminated")
+	m.logger.Info().Msg("[ML-STEP5] mainloop terminated")
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"code.videolan.org/rist/ristgo"
 	"code.videolan.org/rist/ristgo/libristwrapper"
@@ -30,6 +31,7 @@ type Normalizer struct {
 // New creates a RIST-based normalizer with automatic fallback to in-memory bridging.
 func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, error) {
 	logger := logging.Log.With().Str("module", "normalizer").Str("identifier", identifier).Logger()
+	logger.Info().Msg("[STEP N1] Starting RIST normalizer initialization")
 
 	// --- Create RIST receiver ---
 	receiver, err := ristgo.ReceiverCreate(ctx, &ristgo.ReceiverConfig{
@@ -39,8 +41,11 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		StatsInterval:           stats.StatsIntervalSeconds * 1000,
 	})
 	if err != nil {
+		logger.Error().Err(err).Msg("[STEP N1-FAIL] Failed to create RIST receiver")
 		return nil, fmt.Errorf("failed to create RIST receiver: %w", err)
 	}
+	logger.Info().Msg("[STEP N2] RIST receiver created successfully")
+	time.Sleep(time.Second)
 
 	// --- Create RIST sender ---
 	sender, err := ristgo.CreateSender(ctx, &ristgo.SenderConfig{
@@ -50,9 +55,12 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		StatsInterval:           stats.StatsIntervalSeconds * 1000,
 	})
 	if err != nil {
+		logger.Error().Err(err).Msg("[STEP N2-FAIL] Failed to create RIST sender")
 		receiver.Destroy()
 		return nil, fmt.Errorf("failed to create RIST sender: %w", err)
 	}
+	logger.Info().Msg("[STEP N3] RIST sender created successfully")
+	time.Sleep(time.Second)
 
 	norm := &Normalizer{
 		sender:   sender,
@@ -61,65 +69,86 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		OutChan:  make(chan []byte, 4096),
 	}
 
-	// --- Force a proper UDP peer for local bridging ---
-	ristURL, _ := url.Parse("rist://@127.0.0.1:9000") // explicit port to force UDP bind
+	// --- Attempt real UDP peer mode ---
+	logger.Info().Msg("[STEP N4] Attempting to create local UDP bridge between sender and receiver")
+
+	ristURL, _ := url.Parse("rist://@127.0.0.1:9000")
 	peerConfig, err := ristgo.ParseRistURL(ristURL)
 	if err == nil {
 		if _, err := sender.AddPeer(peerConfig); err == nil {
-			// Now the sender listens on UDP:9000 and receiver will connect to it
+			logger.Info().Msg("[STEP N4a] Sender peer added successfully on 127.0.0.1:9000")
 			if _, err := receiver.AddPeer(peerConfig); err == nil {
-				logger.Info().Msg("RIST normalizer bridged via UDP loopback (127.0.0.1:9000)")
+				logger.Info().Msg("[STEP N4b] Receiver peer added successfully, UDP bridge active")
+				time.Sleep(time.Second)
 				return norm, nil
 			}
-			logger.Warn().Err(err).Msg("Failed to connect receiver peer — fallback to memory")
+			logger.Warn().Err(err).Msg("[STEP N4b-FAIL] Failed to add receiver peer — fallback to memory mode")
 		} else {
-			logger.Warn().Err(err).Msg("Failed to create sender peer — fallback to memory")
+			logger.Warn().Err(err).Msg("[STEP N4a-FAIL] Failed to add sender peer — fallback to memory mode")
 		}
 	} else {
-		logger.Warn().Err(err).Msg("Failed to parse RIST URL — fallback to memory")
+		logger.Warn().Err(err).Msg("[STEP N4-FAIL] Failed to parse RIST URL — fallback to memory mode")
 	}
+	time.Sleep(time.Second)
 
-	// --- In-memory fallback ---
+	// --- In-memory fallback mode ---
+	logger.Warn().Msg("[STEP N5] Activating in-memory fallback bridge (no UDP peer)")
 	norm.inMemory = true
 	readCtx, cancel := context.WithCancel(ctx)
 	norm.cancelFunc = cancel
 
 	go func() {
-		logger.Info().Msg("In-memory RIST bridge active (internal data channel)")
+		logger.Info().Msg("[STEP N6] In-memory RIST bridge goroutine started (sender→receiver)")
+		packetCount := 0
 		for {
 			select {
 			case <-readCtx.Done():
-				logger.Info().Msg("In-memory RIST bridge stopped")
+				logger.Info().Msg("[STEP N6-END] In-memory RIST bridge stopped (context canceled)")
 				return
 			case pkt := <-norm.dataCh:
+				packetCount++
+				if packetCount%100 == 0 {
+					logger.Debug().Int("packets", packetCount).Msg("[INMEM] Forwarding packet from dataCh to OutChan")
+				}
 				select {
 				case norm.OutChan <- pkt:
 				default:
-					// drop when channel full
+					logger.Warn().Msg("[INMEM] OutChan full — dropping packet")
 				}
 			}
 		}
 	}()
 
-	logger.Info().Msg("Created in-memory RIST normalizer (sender→receiver fallback mode)")
+	logger.Info().Msg("[STEP N7] Created in-memory RIST normalizer (sender→receiver fallback mode)")
+	time.Sleep(time.Second)
 	return norm, nil
 }
 
 // Write feeds packets into the RIST pipeline or in-memory channel.
 func (n *Normalizer) Write(data []byte) error {
+	logger := logging.Log.With().Str("module", "normalizer").Logger()
+
 	if n.sender == nil {
+		logger.Error().Msg("[WRITE-FAIL] Sender not initialized")
 		return fmt.Errorf("sender not initialized")
 	}
 
 	if n.inMemory {
 		select {
 		case n.dataCh <- append([]byte(nil), data...):
+			logger.Trace().Int("bytes", len(data)).Msg("[WRITE] Wrote packet into in-memory channel")
 		default:
+			logger.Warn().Msg("[WRITE] In-memory channel full — packet dropped")
 		}
 		return nil
 	}
 
 	_, err := n.sender.Write(data)
+	if err != nil {
+		logger.Error().Err(err).Msg("[WRITE-FAIL] Error writing data to sender")
+	} else {
+		logger.Trace().Int("bytes", len(data)).Msg("[WRITE] Packet sent through RIST sender")
+	}
 	return err
 }
 
@@ -131,23 +160,24 @@ func (n *Normalizer) Receiver() ristgo.Receiver {
 // Close gracefully stops all goroutines and RIST handles.
 func (n *Normalizer) Close() {
 	logger := logging.Log.With().Str("module", "normalizer").Logger()
+	logger.Info().Msg("[CLOSE] Closing normalizer")
 
 	if n.cancelFunc != nil {
 		n.cancelFunc()
 	}
 
 	if n.sender != nil {
-		logger.Info().Msg("Closing RIST sender")
+		logger.Info().Msg("[CLOSE] Closing RIST sender")
 		n.sender.Close()
 	}
 
 	if n.receiver != nil {
-		logger.Info().Msg("Destroying RIST receiver")
+		logger.Info().Msg("[CLOSE] Destroying RIST receiver")
 		n.receiver.Destroy()
 	}
 
 	close(n.OutChan)
-	logger.Info().Msg("Normalizer closed successfully")
+	logger.Info().Msg("[CLOSE] Normalizer closed successfully")
 }
 
 // --- helper functions (logging + stats) ---
