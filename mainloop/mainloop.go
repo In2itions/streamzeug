@@ -1,6 +1,7 @@
 /*
- * SPDX-FileCopyrightText: Streamzeug Copyright © 2021 ODMedia B.V. All right reserved.
+ * SPDX-FileCopyrightText: Streamzeug Copyright © 2021-2025 ODMedia B.V.
  * SPDX-FileContributor: Author: Gijs Peskens <gijs@peskens.net>
+ * SPDX-FileContributor: Lucy (ChatGPT Assistant)
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -25,6 +26,7 @@ type inputstatus struct {
 	lastPacketTime     time.Time
 }
 
+// Mainloop manages input data flow and fan-out to multiple outputs (UDP, SRT, etc.)
 type Mainloop struct {
 	ctx                context.Context
 	flow               ristgo.ReceiverFlow
@@ -39,43 +41,49 @@ type Mainloop struct {
 	lastStatusCall     time.Time
 }
 
+// RemoveOutput by direct reference
+func (m *Mainloop) RemoveOutput(o output.Output) {
+	select {
+	case <-m.ctx.Done():
+		return
+	default:
+	}
+	m.outPutRemove <- o
+}
+
+// removeOutputByID removes output by numeric index
 func (m *Mainloop) removeOutputByID(idx int) {
 	select {
 	case <-m.ctx.Done():
 		return
 	default:
-		//
 	}
 	m.outRemoveIdx <- idx
 }
 
-func (m *Mainloop) RemoveOutput(output output.Output) {
-	select {
-	case <-m.ctx.Done():
-		return
-	default:
-		//
-	}
-	m.outPutRemove <- output
-}
-
-func (m *Mainloop) deleteOutput(idx int, output output.Output) {
-	m.logger.Info().Msgf("deleting output: %s", output.String())
+// deleteOutput closes and removes an output from map
+func (m *Mainloop) deleteOutput(idx int, o output.Output) {
+	m.logger.Info().Msgf("deleting output: %s", o.String())
 	close(m.outputs[idx].dataChan)
 	delete(m.outputs, idx)
 }
 
-func (m *Mainloop) AddOutput(output output.Output) {
-	m.logger.Info().Msgf("adding output %s", output.String())
+// AddOutput registers a new output
+func (m *Mainloop) AddOutput(o output.Output) {
+	if m == nil {
+		logging.Log.Warn().Msg("Mainloop is nil — skipping AddOutput() to prevent crash")
+		return
+	}
+	m.logger.Info().Msgf("adding output %s", o.String())
 	select {
 	case <-m.ctx.Done():
 		return
 	default:
-		//
 	}
-	m.outPutAdd <- output
+	m.outPutAdd <- o
 }
 
+// Wait waits for all goroutines to finish or timeout
 func (m *Mainloop) Wait(timeout time.Duration) {
 	c := make(chan bool)
 	go func() {
@@ -84,12 +92,11 @@ func (m *Mainloop) Wait(timeout time.Duration) {
 	}()
 	select {
 	case <-c:
-		return
 	case <-time.After(timeout):
-		return
 	}
 }
 
+// NewMainloop constructs a mainloop and starts its receive loop
 func NewMainloop(ctx context.Context, flow ristgo.ReceiverFlow, identifier string) *Mainloop {
 	m := &Mainloop{
 		ctx:          ctx,
@@ -100,19 +107,31 @@ func NewMainloop(ctx context.Context, flow ristgo.ReceiverFlow, identifier strin
 		outPutRemove: make(chan output.Output, 4),
 		outRemoveIdx: make(chan int, 16),
 	}
+
 	go receiveLoop(m)
 	return m
 }
 
+// receiveLoop handles incoming RIST packets and fans them out to outputs.
 func receiveLoop(m *Mainloop) {
-	outputidx := 0
+	m.wg.Add(1)
+	defer m.wg.Done()
+
 	m.primaryInputStatus.lastPacketTime = time.Now()
 	m.lastStatusCall = m.primaryInputStatus.lastPacketTime
-	expectedSec := uint16(0)
+
+	// 🛡 Safety guard: skip loop if no RIST flow (UDP/in-memory mode)
+	if m.flow == nil {
+		m.logger.Warn().Msg("Mainloop started without RIST flow (UDP/in-memory mode) — skipping receiveLoop")
+		return
+	}
+
 	m.logger.Info().Msg("receiver mainloop started")
-	m.wg.Add(1)
+	outputidx := 0
+	expectedSeq := uint16(0)
 	lastDiscontinuityMsg := time.Time{}
-	discontinuitiesSinceLastMsg := int(0)
+	discontinuitiesSinceLastMsg := 0
+
 main:
 	for {
 		select {
@@ -123,45 +142,47 @@ main:
 			if !ok {
 				break main
 			}
-			discontinuity := false
-			if rb.Discontinuity {
-				discontinuity = true
-			}
-			if rb.SeqNo != uint32(expectedSec) {
-				discontinuity = true
-			}
+
+			discontinuity := rb.Discontinuity || rb.SeqNo != uint32(expectedSeq)
 			if discontinuity {
 				m.primaryInputStatus.discontinuitycount++
 				discontinuitiesSinceLastMsg++
 			}
 
-			if discontinuitiesSinceLastMsg > 0 && time.Since(lastDiscontinuityMsg) >= time.Duration(5)*time.Second {
+			// Log discontinuities every 5s max
+			if discontinuitiesSinceLastMsg > 0 && time.Since(lastDiscontinuityMsg) >= 5*time.Second {
 				m.logger.Error().Int("count", discontinuitiesSinceLastMsg).Msg("discontinuity!")
 				lastDiscontinuityMsg = time.Now()
 				discontinuitiesSinceLastMsg = 0
 			}
-			expectedSec = uint16(rb.SeqNo) + 1
+
+			expectedSeq = uint16(rb.SeqNo) + 1
+
+			// Update stats
 			m.statusLock.Lock()
 			m.primaryInputStatus.packetcount++
 			m.primaryInputStatus.packetcountsince++
-			m.primaryInputStatus.lastPacketTime = time.Now()
 			m.primaryInputStatus.bytesSince += len(rb.Data)
+			m.primaryInputStatus.lastPacketTime = time.Now()
 			m.statusLock.Unlock()
+
 			m.writeOutputs(rb)
+
 		case output := <-m.outPutAdd:
 			m.statusLock.Lock()
 			m.addOutput(output, outputidx)
 			outputidx++
 			m.statusLock.Unlock()
+
 		case idx := <-m.outRemoveIdx:
 			m.statusLock.Lock()
-			output, ok := m.outputs[idx]
-			if ok {
-				m.deleteOutput(idx, output.w)
+			if o, ok := m.outputs[idx]; ok {
+				m.deleteOutput(idx, o.w)
 			} else {
-				m.logger.Error().Msgf("couldn't delete output at index: %d, notfound", idx)
+				m.logger.Error().Msgf("couldn't delete output at index: %d (not found)", idx)
 			}
 			m.statusLock.Unlock()
+
 		case output := <-m.outPutRemove:
 			found := false
 			m.statusLock.Lock()
@@ -174,13 +195,13 @@ main:
 			}
 			m.statusLock.Unlock()
 			if !found {
-				m.logger.Error().Msgf("couldn't delete output: %s, notfound", output.String())
+				m.logger.Error().Msgf("couldn't delete output: %s (not found)", output.String())
 			}
 		}
 	}
+
 	close(m.outPutAdd)
 	close(m.outPutRemove)
 	close(m.outRemoveIdx)
 	m.logger.Info().Msg("mainloop terminated")
-	m.wg.Done()
 }
