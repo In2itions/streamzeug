@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Streamzeug Copyright © 2021 ODMedia B.V. All right reserved.
- * SPDX-FileContributor: Author: Gijs Peskens <gijs@peskens.net>
+ * SPDX-FileCopyrightText: Streamzeug Copyright © 2021-2025 ODMedia B.V.
+ * SPDX-FileContributor: Author: Lucy (ChatGPT Assistant, based on original by Gijs Peskens)
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -25,6 +25,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	tsPacketSize  = 188
+	tsUdpPayload  = tsPacketSize * 7 // 1316 bytes per UDP frame
+	reconnectWait = 50 * time.Millisecond
+)
+
 type socketOptFunc func(sc syscall.RawConn) error
 
 type udpoutput struct {
@@ -46,10 +52,11 @@ type udpoutput struct {
 	buf        []byte
 }
 
-const tsPacketSize = 188
-const tsUdpPayload = tsPacketSize * 7 // 1316 bytes per UDP frame
+// ---------------------------------------------------------
+// Core Write Functions
+// ---------------------------------------------------------
 
-// writeAligned ensures TS-aligned UDP output using an internal buffer
+// writeAligned ensures TS-packet-aligned UDP output using a local buffer.
 func (u *udpoutput) writeAligned(data []byte) (int, error) {
 	u.buf = append(u.buf, data...)
 	written := 0
@@ -66,56 +73,60 @@ func (u *udpoutput) writeAligned(data []byte) (int, error) {
 	return written, nil
 }
 
-func (u *udpoutput) String() string {
-	return u.name
-}
-
-func (u *udpoutput) Count() int {
-	return 1
-}
-
+// writeRTP wraps MPEG-TS in RTP framing and sends it efficiently via writev().
 func (u *udpoutput) writeRTP(block *libristwrapper.RistDataBlock) (int, error) {
 	rtptime := (block.TimeStamp * 90000) >> 32
-	u.rtpHeader[0] = 0x80
-	u.rtpHeader[1] = 0x21 & 0x7f //MPEG-TS
-	u.rtpHeader[2] = byte(u.rtpSeq >> 8)
-	u.rtpHeader[3] = byte(u.rtpSeq & 0xff)
+	h := u.rtpHeader
+
+	h[0], h[1] = 0x80, 0x21&0x7f
+	h[2], h[3] = byte(u.rtpSeq>>8), byte(u.rtpSeq)
 	u.rtpSeq++
-	u.rtpHeader[4] = byte((rtptime >> 24) & 0xff)
-	u.rtpHeader[5] = byte((rtptime >> 16) & 0xff)
-	u.rtpHeader[6] = byte((rtptime >> 8) & 0xff)
-	u.rtpHeader[7] = byte((rtptime) & 0xff)
-	u.rtpHeader[8] = byte(u.rtpSSRC >> 24 & 0xff)
-	u.rtpHeader[9] = byte(u.rtpSSRC >> 16 & 0xff)
-	u.rtpHeader[10] = byte(u.rtpSSRC >> 8 & 0xff)
-	u.rtpHeader[11] = byte(u.rtpSSRC & 0xff)
-	bufs := make([][]byte, 2)
-	bufs[0] = u.rtpHeader
-	bufs[1] = block.Data
+	h[4], h[5], h[6], h[7] = byte(rtptime>>24), byte(rtptime>>16), byte(rtptime>>8), byte(rtptime)
+	h[8], h[9], h[10], h[11] = byte(u.rtpSSRC>>24), byte(u.rtpSSRC>>16), byte(u.rtpSSRC>>8), byte(u.rtpSSRC)
+
+	bufs := [][]byte{h, block.Data}
 	return vectorio.WritevSC(u.sc, bufs)
 }
 
-func (u *udpoutput) Write(block *libristwrapper.RistDataBlock) (n int, err error) {
-	if !u.isRtp {
-		n, err = u.writeAligned(block.Data)
-	} else {
+// ---------------------------------------------------------
+// Interface Methods
+// ---------------------------------------------------------
+
+func (u *udpoutput) String() string { return u.name }
+
+func (u *udpoutput) Count() int { return 1 }
+
+// Write sends a RIST block to the UDP or RTP socket.
+func (u *udpoutput) Write(block *libristwrapper.RistDataBlock) (int, error) {
+	var (
+		n   int
+		err error
+	)
+
+	if u.isRtp {
 		n, err = u.writeRTP(block)
+	} else {
+		n, err = u.writeAligned(block.Data)
 	}
-	if err != nil {
-		if errors.Is(err, error(syscall.EPERM)) || errors.Is(err, error(syscall.ECONNREFUSED)) {
-			err = nil
-			return
-		}
-		if u.float {
-			logging.Log.Info().Str("identifier", u.identifier).Msgf("floating udp output: %s entered inactive state", u.name)
-			go func() {
-				go u.connectloop()
-			}()
-		}
+
+	if err == nil {
+		return n, nil
 	}
-	return
+
+	// Handle recoverable network errors gracefully
+	if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.ECONNREFUSED) {
+		return n, nil
+	}
+
+	if u.float {
+		logging.Log.Info().Str("identifier", u.identifier).Msgf("floating UDP output: %s entered inactive state", u.name)
+		go u.connectloop()
+	}
+
+	return n, err
 }
 
+// Close cleans up sockets and cancels the context.
 func (u *udpoutput) Close() error {
 	u.cancel()
 	if u.c != nil {
@@ -124,121 +135,171 @@ func (u *udpoutput) Close() error {
 	return nil
 }
 
+// ---------------------------------------------------------
+// Connection Handling
+// ---------------------------------------------------------
+
+// connect attempts to open a UDP socket and apply configured socket options.
+func (u *udpoutput) connect() error {
+	var err error
+	u.c, err = net.DialUDP("udp", u.source, u.target)
+	if err != nil {
+		return err
+	}
+
+	u.sc, err = u.c.SyscallConn()
+	if err != nil {
+		return err
+	}
+
+	for _, s := range u.ss {
+		if serr := s(u.sc); serr != nil {
+			return serr
+		}
+	}
+
+	return nil
+}
+
+// connectloop periodically retries reconnecting floating UDP outputs.
 func (u *udpoutput) connectloop() {
 	for {
 		select {
 		case <-u.ctx.Done():
 			return
 		default:
-			//
 		}
-		err := u.connect()
-		if err != nil {
-			time.Sleep(50 * time.Millisecond)
+
+		if err := u.connect(); err != nil {
+			time.Sleep(reconnectWait)
 			continue
 		}
-		logging.Log.Info().Str("identifier", u.identifier).Msgf("floating udp output: %s entered active state", u.name)
-		u.m.AddOutput(u)
-		return
-	}
-}
 
-func (u *udpoutput) connect() (err error) {
-	u.c, err = net.DialUDP("udp", u.source, u.target)
-	if err != nil {
-		return
-	}
-	u.sc, err = u.c.SyscallConn()
-	if err != nil {
-		return
-	}
-	for _, s := range u.ss {
-		err = s(u.sc)
-		if err != nil {
-			return
+		logging.Log.Info().
+			Str("identifier", u.identifier).
+			Msgf("floating UDP output: %s entered active state", u.name)
+
+		if u.m != nil {
+			u.m.AddOutput(u)
+		} else {
+			logging.Log.Warn().
+				Str("identifier", u.identifier).
+				Msg("Mainloop is nil during connectloop — skipping AddOutput()")
 		}
+		return
 	}
-	return
 }
 
+// ---------------------------------------------------------
+// Parser Entry Point
+// ---------------------------------------------------------
+
+// ParseUdpOutput configures a new UDP or RTP output, including multicast TTL and reconnect handling.
 func ParseUdpOutput(ctx context.Context, u *url.URL, identifier string, m *mainloop.Mainloop) (output.Output, error) {
-	logging.Log.Info().Str("identifier", identifier).Msgf("setting up udp output: %s", u.String())
-	var out udpoutput
-	out.name = u.String()
-	out.identifier = identifier
+	logger := logging.Log.With().Str("identifier", identifier).Logger()
+	logger.Info().Msgf("Setting up UDP output: %s", u.String())
+
+	out := udpoutput{
+		name:       u.String(),
+		identifier: identifier,
+		float:      false,
+		ss:         make([]socketOptFunc, 0),
+		m:          m,
+	}
+
 	out.ctx, out.cancel = context.WithCancel(ctx)
-	out.m = m
-	out.float = false
-	out.ss = make([]socketOptFunc, 0)
+
+	// Parse URL query options
 	mcastIface := u.Query().Get("iface")
-	float := u.Query().Get("float")
-	if float != "" {
+	if u.Query().Get("float") != "" {
 		out.float = true
 	}
+
+	// RTP support
 	if u.Scheme == "rtp" {
 		out.isRtp = true
 		out.rtpSSRC = rand.Uint32()
 		out.rtpHeader = make([]byte, 12)
 	}
+
+	// TTL handling
 	ttl := 255
-	ttlVal := u.Query().Get("ttl")
-	if ttlVal != "" {
-		var err error
-		ttl, err = strconv.Atoi(ttlVal)
-		if err != nil {
+	if ttlVal := u.Query().Get("ttl"); ttlVal != "" {
+		if val, err := strconv.Atoi(ttlVal); err == nil {
+			ttl = val
+		} else {
 			return nil, err
 		}
 	}
 
-	var sourceIP *net.UDPAddr = nil
+	// Resolve source interface if specified
+	var sourceIP *net.UDPAddr
 	if mcastIface != "" {
 		if iface, err := net.InterfaceByName(mcastIface); err == nil {
 			addrs, err := iface.Addrs()
 			if err != nil {
 				return nil, err
 			}
-			ipnet := addrs[0].(*net.IPNet)
-			ip := ipnet.IP
-			sourceIP, err = net.ResolveUDPAddr("udp", ip.String()+":0")
+			if len(addrs) > 0 {
+				if ipnet, ok := addrs[0].(*net.IPNet); ok {
+					sourceIP, err = net.ResolveUDPAddr("udp", ipnet.IP.String()+":0")
+					if err != nil {
+						return nil, err
+					}
+				}
+			}
+		} else if strings.Contains(mcastIface, ":") {
+			sourceIP, err = net.ResolveUDPAddr("udp", mcastIface)
 			if err != nil {
 				return nil, err
 			}
-		} else if strings.Contains(mcastIface, ":") {
-			if sourceIP, err = net.ResolveUDPAddr("udp", mcastIface); err != nil {
+		} else {
+			sourceIP, err = net.ResolveUDPAddr("udp", mcastIface+":0")
+			if err != nil {
 				return nil, err
 			}
-		} else if sourceIP, err = net.ResolveUDPAddr("udp", mcastIface+":0"); err != nil {
-			return nil, err
 		}
 	}
+
+	// Resolve destination
 	target, err := net.ResolveUDPAddr("udp", u.Host)
 	if err != nil {
 		return nil, err
 	}
 	out.source = sourceIP
 	out.target = target
+
+	// Multicast TTL
 	if target.IP.IsMulticast() {
-		ttlFunc := func(sc syscall.RawConn) (err error) {
-			var scerr error
-			err = sc.Control(func(fd uintptr) {
-				scerr = syscall.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_MULTICAST_TTL, ttl)
+		ttlFunc := func(sc syscall.RawConn) error {
+			var sockErr error
+			err := sc.Control(func(fd uintptr) {
+				sockErr = syscall.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_MULTICAST_TTL, ttl)
 			})
-			if err != nil {
-				return
+			if err == nil {
+				err = sockErr
 			}
-			err = scerr
-			return
+			return err
 		}
 		out.ss = append(out.ss, ttlFunc)
 	}
+
+	// Establish connection
 	err = out.connect()
 	if err != nil {
-		if out.float && (errors.Is(err, error(unix.EADDRNOTAVAIL)) || errors.Is(err, error(unix.ENETUNREACH))) {
+		if out.float && (errors.Is(err, unix.EADDRNOTAVAIL) || errors.Is(err, unix.ENETUNREACH)) {
 			go out.connectloop()
 			return &out, nil
 		}
 		return nil, err
 	}
-	out.m.AddOutput(&out)
+
+	// Safely register output
+	if out.m != nil {
+		out.m.AddOutput(&out)
+	} else {
+		logger.Warn().Msg("Mainloop is nil — skipping AddOutput() to prevent crash")
+	}
+
 	return &out, nil
 }
