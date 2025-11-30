@@ -9,6 +9,7 @@ package normalizer
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -69,29 +70,41 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		OutChan:  make(chan []byte, 4096),
 	}
 
-	// --- Attempt real UDP peer mode ---
-	logger.Info().Msg("[STEP N4] Attempting to create local UDP bridge between sender and receiver")
+	// --- Attempt dynamic UDP peer mode ---
+	logger.Info().Msg("[STEP N4] Attempting to create dynamic local UDP bridge between sender and receiver")
 
-	ristURL, _ := url.Parse("rist://@127.0.0.1:9000")
+	// Dynamically pick an available UDP port for this stream
+	listener, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		logger.Warn().Err(err).Msg("[STEP N4-FAIL] Failed to bind dynamic UDP port — fallback to memory mode")
+		goto fallback
+	}
+	localPort := listener.LocalAddr().(*net.UDPAddr).Port
+	listener.Close()
+
+	ristURL, _ := url.Parse(fmt.Sprintf("rist://@127.0.0.1:%d?profile=simple&cname=%s", localPort, identifier))
 	peerConfig, err := ristgo.ParseRistURL(ristURL)
 	if err == nil {
+		logger.Debug().Msgf("[STEP N4a] Parsed RIST URL OK: %s", ristURL.String())
+
 		if _, err := sender.AddPeer(peerConfig); err == nil {
-			logger.Info().Msg("[STEP N4a] Sender peer added successfully on 127.0.0.1:9000")
+			logger.Info().Msgf("[STEP N4b] Sender peer added on %s", ristURL.String())
+
 			if _, err := receiver.AddPeer(peerConfig); err == nil {
-				logger.Info().Msg("[STEP N4b] Receiver peer added successfully, UDP bridge active")
-				time.Sleep(time.Second)
+				logger.Info().Msgf("[STEP N4c] Receiver peer added — dynamic UDP bridge active on %s", ristURL.String())
+				time.Sleep(time.Second) // allow RIST to initialize
 				return norm, nil
 			}
-			logger.Warn().Err(err).Msg("[STEP N4b-FAIL] Failed to add receiver peer — fallback to memory mode")
+			logger.Warn().Err(err).Msg("[STEP N4c-FAIL] Failed to add receiver peer — fallback to memory mode")
 		} else {
-			logger.Warn().Err(err).Msg("[STEP N4a-FAIL] Failed to add sender peer — fallback to memory mode")
+			logger.Warn().Err(err).Msg("[STEP N4b-FAIL] Failed to add sender peer — fallback to memory mode")
 		}
 	} else {
 		logger.Warn().Err(err).Msg("[STEP N4-FAIL] Failed to parse RIST URL — fallback to memory mode")
 	}
-	time.Sleep(time.Second)
 
-	// --- In-memory fallback mode ---
+fallback:
+	// --- In-memory fallback ---
 	logger.Warn().Msg("[STEP N5] Activating in-memory fallback bridge (no UDP peer)")
 	norm.inMemory = true
 	readCtx, cancel := context.WithCancel(ctx)
