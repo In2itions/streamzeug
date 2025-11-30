@@ -65,15 +65,6 @@ func CreateFlow(ctx context.Context, c *config.Flow) (*Flow, error) {
 		flow.receiver = nil
 	}
 
-	// --- Setup Inputs ---
-	flow.configuredInputs = make(map[string]input.Input)
-	for _, i := range c.Inputs {
-		err = flow.setupInput(&i)
-		if err != nil {
-			return nil, fmt.Errorf("failed to setup input %s: %w", i.Url, err)
-		}
-	}
-
 	// --- Start mainloop for RIST or UDP ---
 	if flowType == "RIST" {
 		destinationPort := uint16(0)
@@ -97,6 +88,15 @@ func CreateFlow(ctx context.Context, c *config.Flow) (*Flow, error) {
 		logging.Log.Info().
 			Str("identifier", c.Identifier).
 			Msg("UDP flow setup complete — mainloop fed via internal RIST normalizer")
+	}
+
+	// --- Setup Inputs ---
+	flow.configuredInputs = make(map[string]input.Input)
+	for _, i := range c.Inputs {
+		err = flow.setupInput(&i)
+		if err != nil {
+			return nil, fmt.Errorf("failed to setup input %s: %w", i.Url, err)
+		}
 	}
 
 	// --- Setup Outputs ---
