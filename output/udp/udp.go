@@ -45,6 +45,23 @@ type udpoutput struct {
 	ss         []socketOptFunc
 }
 
+const tsPacketSize = 188
+const tsUdpPayload = tsPacketSize * 7 // 1316 bytes per UDP frame
+
+// writeAligned ensures TS-aligned UDP output
+func writeAligned(conn *net.UDPConn, data []byte) (int, error) {
+	written := 0
+	for len(data) >= tsUdpPayload {
+		n, err := conn.Write(data[:tsUdpPayload])
+		if err != nil {
+			return written, err
+		}
+		written += n
+		data = data[tsUdpPayload:]
+	}
+	return written, nil
+}
+
 func (u *udpoutput) String() string {
 	return u.name
 }
@@ -76,7 +93,7 @@ func (u *udpoutput) writeRTP(block *libristwrapper.RistDataBlock) (int, error) {
 
 func (u *udpoutput) Write(block *libristwrapper.RistDataBlock) (n int, err error) {
 	if !u.isRtp {
-		n, err = u.c.Write(block.Data)
+		n, err = writeAligned(u.c, block.Data)
 	} else {
 		n, err = u.writeRTP(block)
 	}
