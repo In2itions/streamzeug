@@ -43,6 +43,7 @@ type udpoutput struct {
 	rtpHeader  []byte
 	sc         syscall.RawConn
 	ss         []socketOptFunc
+	buf        []byte
 }
 
 const tsPacketSize = 188
