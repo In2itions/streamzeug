@@ -45,7 +45,7 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 	}
 
 	// --- Connect sender → receiver internally ---
-	ristURL, _ := url.Parse("rist://@")
+	ristURL, _ := url.Parse("rist://127.0.0.1:0")
 	peerConfig, err := ristgo.ParseRistURL(ristURL)
 	if err != nil {
 		sender.Close()
