@@ -82,9 +82,12 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 	localPort := listener.LocalAddr().(*net.UDPAddr).Port
 	listener.Close()
 
+	var peerConfig *ristgo.PeerConfig // ✅ declare before use
+	var ristErr error                 // ✅ separate variable for error
+
 	ristURL, _ := url.Parse(fmt.Sprintf("rist://@127.0.0.1:%d?profile=simple&cname=%s", localPort, identifier))
-	peerConfig, err := ristgo.ParseRistURL(ristURL)
-	if err == nil {
+	peerConfig, ristErr = ristgo.ParseRistURL(ristURL)
+	if ristErr == nil {
 		logger.Debug().Msgf("[STEP N4a] Parsed RIST URL OK: %s", ristURL.String())
 
 		if _, err := sender.AddPeer(peerConfig); err == nil {
@@ -100,15 +103,12 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 			logger.Warn().Err(err).Msg("[STEP N4b-FAIL] Failed to add sender peer — fallback to memory mode")
 		}
 	} else {
-		logger.Warn().Err(err).Msg("[STEP N4-FAIL] Failed to parse RIST URL — fallback to memory mode")
+		logger.Warn().Err(ristErr).Msg("[STEP N4-FAIL] Failed to parse RIST URL — fallback to memory mode")
 	}
 
 fallback:
 	// --- In-memory fallback ---
 	logger.Warn().Msg("[STEP N5] Activating in-memory fallback bridge (no UDP peer)")
-	norm.inMemory = true
-	readCtx, cancel := context.WithCancel(ctx)
-	norm.cancelFunc = cancel
 
 	go func() {
 		logger.Info().Msg("[STEP N6] In-memory RIST bridge goroutine started (sender→receiver)")
