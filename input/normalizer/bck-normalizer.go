@@ -1,9 +1,3 @@
-/*
- * SPDX-FileCopyrightText: Streamzeug Copyright © 2025 ODMedia B.V.
- * SPDX-FileContributor: Author: Lucy (ChatGPT Assistant)
- * SPDX-License-Identifier: GPL-3.0-or-later
- */
-
 package normalizer
 
 import (
@@ -20,15 +14,10 @@ import (
 )
 
 type Normalizer struct {
-	sender     *ristgo.Sender
-	receiver   ristgo.Receiver
-	inMemory   bool
-	cancelFunc context.CancelFunc
+	sender   *ristgo.Sender
+	receiver ristgo.Receiver
 }
 
-// New creates a RIST-based normalizer that can operate in two modes:
-// 1. Normal UDP peer connection (preferred)
-// 2. Pure in-memory sender→receiver fallback if peer creation fails.
 func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, error) {
 	logger := logging.Log.With().Str("module", "normalizer").Str("identifier", identifier).Logger()
 
@@ -55,53 +44,29 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		return nil, fmt.Errorf("failed to create RIST sender: %w", err)
 	}
 
-	norm := &Normalizer{
-		sender:   sender,
-		receiver: receiver,
-	}
-
-	// --- Try normal UDP peer loopback first ---
+	// --- Connect sender → receiver internally ---
 	ristURL, _ := url.Parse("rist://127.0.0.1:0")
 	peerConfig, err := ristgo.ParseRistURL(ristURL)
-	if err == nil {
-		if _, err := sender.AddPeer(peerConfig); err == nil {
-			logger.Info().Msg("Connected RIST sender→receiver via local UDP loopback (127.0.0.1:0)")
-			return norm, nil
-		} else {
-			logger.Warn().Err(err).Msg("Failed to create UDP peer — falling back to in-memory mode")
-		}
-	} else {
-		logger.Warn().Err(err).Msg("Failed to parse RIST URL — falling back to in-memory mode")
+	if err != nil {
+		sender.Close()
+		receiver.Destroy()
+		return nil, err
 	}
 
-	// --- Fallback: In-memory sender→receiver bridge ---
-	norm.inMemory = true
-	readCtx, cancel := context.WithCancel(ctx)
-	norm.cancelFunc = cancel
+	if _, err := sender.AddPeer(peerConfig); err != nil {
+		sender.Close()
+		receiver.Destroy()
+		return nil, err
+	}
 
-	go func() {
-		logger.Info().Msg("In-memory RIST bridge started (no UDP sockets)")
-		buf := make([]byte, 1500)
-		for {
-			select {
-			case <-readCtx.Done():
-				logger.Info().Msg("In-memory RIST bridge stopped")
-				return
-			default:
-				n, err := sender.Read(buf)
-				if err != nil {
-					continue
-				}
-				_ = receiver.InjectData(buf[:n])
-			}
-		}
-	}()
+	logger.Info().Msg("Connected RIST sender→receiver loopback at 127.0.0.1:5000")
 
-	logger.Info().Msg("Created in-memory RIST normalizer (sender→receiver direct injection)")
-	return norm, nil
+	return &Normalizer{
+		sender:   sender,
+		receiver: receiver,
+	}, nil
 }
 
-// Write pushes UDP packets into the RIST sender.
 func (n *Normalizer) Write(data []byte) error {
 	if n.sender == nil {
 		return fmt.Errorf("sender not initialized")
@@ -110,26 +75,15 @@ func (n *Normalizer) Write(data []byte) error {
 	return err
 }
 
-// Receiver returns the underlying RIST receiver handle.
 func (n *Normalizer) Receiver() ristgo.Receiver {
 	return n.receiver
 }
 
-// Close gracefully tears down sender, receiver, and background bridge.
 func (n *Normalizer) Close() {
-	logger := logging.Log.With().Str("module", "normalizer").Logger()
-	if n.cancelFunc != nil {
-		n.cancelFunc()
-	}
 	if n.sender != nil {
-		logger.Info().Msg("Closing RIST sender")
 		n.sender.Close()
 	}
-	if n.receiver != nil {
-		logger.Info().Msg("Destroying RIST receiver")
-		n.receiver.Destroy()
-	}
-	logger.Info().Msg("Normalizer closed successfully")
+	n.receiver.Destroy()
 }
 
 func createStatsCB(s *stats.Stats) libristwrapper.StatsCallbackFunc {
