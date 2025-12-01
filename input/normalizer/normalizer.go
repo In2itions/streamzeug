@@ -73,44 +73,46 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 	// --- Attempt dynamic UDP peer mode ---
 	logger.Info().Msg("[STEP N4] Attempting to create dynamic local UDP bridge between sender and receiver")
 
-	// Dynamically pick an available UDP port for this stream
+	success := false
+
 	listener, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		logger.Warn().Err(err).Msg("[STEP N4-FAIL] Failed to bind dynamic UDP port — fallback to memory mode")
-		goto fallback
+	if err == nil {
+		localPort := listener.LocalAddr().(*net.UDPAddr).Port
+		listener.Close()
+
+		senderURL, _ := url.Parse(fmt.Sprintf("rist://127.0.0.1:%d?profile=simple&cname=%s-tx", localPort, identifier))
+		receiverURL, _ := url.Parse(fmt.Sprintf("rist://@127.0.0.1:%d?profile=simple&cname=%s-rx", localPort, identifier))
+
+		senderPeer, errSender := ristgo.ParseRistURL(senderURL)
+		receiverPeer, errReceiver := ristgo.ParseRistURL(receiverURL)
+
+		if errSender == nil && errReceiver == nil {
+			logger.Debug().Msgf("[STEP N4a] Using dynamic RIST bridge: TX=%s RX=%s", senderURL.String(), receiverURL.String())
+
+			if _, err := sender.AddPeer(senderPeer); err == nil {
+				logger.Info().Msgf("[STEP N4b] Sender peer added on %s", senderURL.String())
+
+				if _, err := receiver.AddPeer(receiverPeer); err == nil {
+					logger.Info().Msgf("[STEP N4c] Receiver peer added — dynamic UDP bridge active (TX→RX on port %d)", localPort)
+					success = true
+				} else {
+					logger.Warn().Err(err).Msg("[STEP N4c-FAIL] Failed to add receiver peer")
+				}
+			} else {
+				logger.Warn().Err(err).Msg("[STEP N4b-FAIL] Failed to add sender peer")
+			}
+		} else {
+			logger.Warn().Err(errSender).Err(errReceiver).Msg("[STEP N4-FAIL] Failed to parse RIST URLs")
+		}
+	} else {
+		logger.Warn().Err(err).Msg("[STEP N4-FAIL] Failed to bind dynamic UDP port")
 	}
-	localPort := listener.LocalAddr().(*net.UDPAddr).Port
-	listener.Close()
 
-	// Use two separate URLs: sender (connect) and receiver (listen)
-	senderURL, _ := url.Parse(fmt.Sprintf("rist://127.0.0.1:%d?profile=simple&cname=%s-tx", localPort, identifier))
-	receiverURL, _ := url.Parse(fmt.Sprintf("rist://@127.0.0.1:%d?profile=simple&cname=%s-rx", localPort, identifier))
-
-	senderPeer, errSender := ristgo.ParseRistURL(senderURL)
-	receiverPeer, errReceiver := ristgo.ParseRistURL(receiverURL)
-	if errSender != nil || errReceiver != nil {
-		logger.Warn().Err(errSender).Err(errReceiver).Msg("[STEP N4-FAIL] Failed to parse RIST URLs — fallback to memory mode")
-		goto fallback
+	if success {
+		time.Sleep(time.Second)
+		return norm, nil
 	}
 
-	logger.Debug().Msgf("[STEP N4a] Using dynamic RIST bridge: TX=%s RX=%s", senderURL.String(), receiverURL.String())
-
-	if _, err := sender.AddPeer(senderPeer); err != nil {
-		logger.Warn().Err(err).Msg("[STEP N4b-FAIL] Failed to add sender peer — fallback to memory mode")
-		goto fallback
-	}
-	logger.Info().Msgf("[STEP N4b] Sender peer added on %s", senderURL.String())
-
-	if _, err := receiver.AddPeer(receiverPeer); err != nil {
-		logger.Warn().Err(err).Msg("[STEP N4c-FAIL] Failed to add receiver peer — fallback to memory mode")
-		goto fallback
-	}
-
-	logger.Info().Msgf("[STEP N4c] Receiver peer added — dynamic UDP bridge active (TX→RX on port %d)", localPort)
-	time.Sleep(time.Second)
-	return norm, nil
-
-fallback:
 	// --- In-memory fallback ---
 	logger.Warn().Msg("[STEP N5] Activating in-memory fallback bridge (no UDP peer)")
 	norm.inMemory = true
