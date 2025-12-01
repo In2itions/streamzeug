@@ -80,8 +80,9 @@ func New(ctx context.Context, identifier string, s *stats.Stats) (*Normalizer, e
 		localPort := listener.LocalAddr().(*net.UDPAddr).Port
 		listener.Close()
 
-		senderURL, _ := url.Parse(fmt.Sprintf("rist://127.0.0.1:%d?profile=simple&cname=%s-tx", localPort, identifier))
-		receiverURL, _ := url.Parse(fmt.Sprintf("rist://@127.0.0.1:%d?profile=simple&cname=%s-rx", localPort, identifier))
+		// Use localhost for better compatibility across IPv4/IPv6 systems
+		senderURL, _ := url.Parse(fmt.Sprintf("rist://localhost:%d?profile=simple&cname=%s-tx", localPort, identifier))
+		receiverURL, _ := url.Parse(fmt.Sprintf("rist://localhost:%d?profile=simple&cname=%s-rx", localPort, identifier))
 
 		senderPeer, errSender := ristgo.ParseRistURL(senderURL)
 		receiverPeer, errReceiver := ristgo.ParseRistURL(receiverURL)
